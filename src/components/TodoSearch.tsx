@@ -10,13 +10,18 @@ const button = "bg-black text-white px-4 py-2 rounded-md w-full cursor-pointer"
 const label = "font-semibold"
 
 type Filter = 'all' | 'active' | 'completed'
+type Order = 'asc' | 'desc'
 
 type Task = {
   id: string
   name: string
   description: string
   done: boolean
+  createdAt: Date
 }
+
+const deleteTaskDelay = 5000
+const tasksPerPage = 3
 
 type CreateTaskForm = Partial<Omit<Task, 'done'>>
 
@@ -32,20 +37,51 @@ export default function TodoAppSearch() {
   const [filter, setFilter] = useState<Filter>('all')
   const [form, setForm] = useState<CreateTaskForm>(defaultForm)
   const formRef = useRef<HTMLFormElement>(null)
+  const [order, setOrder] = useState<Order>('desc')
   const activeTasksCount = tasks.filter(task => !task.done).length
   const completedTasksCount = tasks.length - activeTasksCount
   const taskDescriptionRefs = useRef<Record<string, HTMLTextAreaElement | undefined>>({})
   const [editingTaskIds, setEditingTaskIds] = useState<string[]>([])
+  const [toDeleteTaskIds, setToDeleteTaskIds] = useState<string[]>([])
+  const deleteTimeoutRefs = useRef<Record<string, NodeJS.Timeout | null>>({})
+  const [page, setPage] = useState<number>(1)
 
   const filterTask = (task: Task, filter: Filter, keyword: string) => 
     (keyword ? task.name.toLocaleLowerCase().includes(keyword) : true) && 
     (filter === 'all' ? true : task.done === (filter === 'completed'))
 
+  const sortTask = (tasks: Task[], order: Order) => {
+    return tasks.sort((a, b) => {
+      if (a.createdAt && b.createdAt) {
+        const aDate = new Date(a.createdAt)
+        const bDate = new Date(b.createdAt)
+        const acc = aDate.getTime() - bDate.getTime()
+        const desc = bDate.getTime() - aDate.getTime()
+        return order === 'asc' ? acc : desc
+      } else {
+        return 0
+      }
+    })
+  }
+
+  const paginateTasks = (tasks: Task[], page: number) => {
+    const paginatedTasks = tasks.filter((task, index) => {
+      const offset = tasksPerPage * (page - 1)
+      return index >= offset && index < (offset + tasksPerPage)
+    })
+    return paginatedTasks
+  }
+
+  /**
+   * Filtering of tasks
+   */
   useEffect(() => {
     const keyword = debouncedSearchKeyword.toLocaleLowerCase().trim()
-    console.log({keyword, filter})
-    setFilteredTasks(tasks.filter(task => filterTask(task, filter, keyword)))
-  }, [tasks, debouncedSearchKeyword, filter])
+    const filteredTasks = tasks.filter(task => filterTask(task, filter, keyword))
+    const sortedTasks = sortTask(filteredTasks, order)
+    const paginatedTasks = paginateTasks(sortedTasks, page)
+    setFilteredTasks(paginatedTasks)
+  }, [tasks, debouncedSearchKeyword, filter, order, page])
 
   const handleFormChange = (e: React.ChangeEvent<HTMLFormElement>) => {
     const { name, value } = e.target
@@ -61,6 +97,7 @@ export default function TodoAppSearch() {
       name: form.name!,
       description: form.description!,
       done: false,
+      createdAt: new Date(),
     }
     setTasks([...tasks, task])
     setForm({...defaultForm})
@@ -82,8 +119,22 @@ export default function TodoAppSearch() {
   }
 
   const deleteTask = (taskId: string) => {
-    const t = tasks.filter(task => task.id !== taskId)
-    setTasks(t)
+    setToDeleteTaskIds([...toDeleteTaskIds, taskId])
+    deleteTimeoutRefs.current[taskId] = setTimeout(() => {
+      setToDeleteTaskIds(toDeleteTaskIds.filter(id => id !== taskId))
+      const t = tasks.filter(task => task.id !== taskId)
+      setTasks(t)
+    }, deleteTaskDelay)
+  }
+
+  const undoDeleteTask = (taskId: string) => {
+    const toBeDeletedTasks = toDeleteTaskIds.filter(id => id !== taskId)
+    setToDeleteTaskIds(toBeDeletedTasks)
+    console.log(deleteTimeoutRefs.current)
+    if (deleteTimeoutRefs.current[taskId]) {
+      clearTimeout(deleteTimeoutRefs.current[taskId])
+      deleteTimeoutRefs.current[taskId] = null
+    }
   }
 
   const clearCompleted = () => {
@@ -109,6 +160,22 @@ export default function TodoAppSearch() {
     if (value) updateTask(taskId, { description: value })
     setEditingTaskIds(editingTaskIds.filter(id => id !== taskId))
   }
+
+  const handleSortByCreatedAt = () =>  {
+    setOrder(order === 'asc' ? 'desc' : 'asc')
+  }
+
+  const handlePreviousPage = () => {
+    if (page > 1) {
+      setPage(page - 1)
+    } 
+  }
+
+  const handleNextPage = () => {
+    setPage(page + 1)
+  }
+
+  const isLastPage = page * tasksPerPage >= tasks.length
 
   return (
     <div className="flex items-center flex-col gap-2">
@@ -167,6 +234,7 @@ export default function TodoAppSearch() {
               <th className={label}>Name</th>
               <th className={label}>Description</th>
               <th className={label}>Status</th>
+              <th onClick={handleSortByCreatedAt} className={label}>Date ({order})</th>
               <th className={label}>Action</th>
             </tr>
           </thead>
@@ -184,6 +252,7 @@ export default function TodoAppSearch() {
             ) : (
               filteredTasks.map(task => {
                 const isEditing = editingTaskIds.includes(task.id)
+                const createdAt = task.createdAt ? new Date(task.createdAt).toLocaleDateString() : ''
                 return <tr key={task.id}>
                   <td>
                     <input type="checkbox" onChange={e => handleCheckBoxChange(e, task.id)} checked={task.done} />
@@ -205,12 +274,26 @@ export default function TodoAppSearch() {
                   <td className="w-[120px]">
                     {task.done ? 'Completed' : 'Active'}
                   </td>
+                  <td>{createdAt}</td>
                   <td>
-                    <button className="text-red-700 underline cursor-pointer" type="button" onClick={() => deleteTask(task.id)}>Delete</button>
+                    {toDeleteTaskIds.includes(task.id) ? (
+                      <button className="text-blue-700 underline cursor-pointer" type="button" onClick={() => undoDeleteTask(task.id)}>Undo</button>
+                    ) :
+                      <button className="text-red-700 underline cursor-pointer" type="button" onClick={() => deleteTask(task.id)}>Delete</button>
+                    }
                   </td>
                 </tr>
               })
             )}
+            <tr>
+              <td colSpan={6} className="flex justify-center w-full">
+                <div className="flex gap-2">
+                  {page > 1 && <button className="underline cursor-pointer" type="button" onClick={handlePreviousPage}>Previous</button>}
+                  <span className="text-sm text-gray-500">{page}</span>
+                  {!isLastPage && <button className="underline cursor-pointer" type="button" onClick={handleNextPage}>Next</button>}
+                </div>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
